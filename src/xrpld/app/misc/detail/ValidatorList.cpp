@@ -727,17 +727,8 @@ ValidatorList::sendValidatorList(
     HashRouter& hashRouter,
     beast::Journal j)
 {
-    std::size_t messageVersion = 0;
-    if (peer.supportsFeature(ProtocolFeature::ValidatorList2Propagation))
-    {
-        messageVersion = 2;
-    }
-    else if (peer.supportsFeature(ProtocolFeature::ValidatorListPropagation))
-    {
-        messageVersion = 1;
-    }
-    if (messageVersion == 0u)
-        return;
+    // v1 messages are no longer supported.
+    std::size_t const messageVersion = 2;
     auto const [newPeerSequence, numVLs] = buildValidatorListMessages(
         messageVersion, peerSequence, maxSequence, rawVersion, rawManifest, blobInfos, messages);
     if (newPeerSequence != 0u)
@@ -858,16 +849,9 @@ ValidatorList::broadcastBlobs(
 
     if (toSkip)
     {
-        // We don't know what messages or message versions we're sending
-        // until we examine our peer's properties. Build the message(s) on
-        // demand, but reuse them when possible.
-
-        // This will hold a v1 message with only the current VL if we have
-        // any peers that don't support v2
-        std::vector<ValidatorList::MessageWithHash> messages1;
-        // This will hold v2 messages indexed by the peer's
-        // `publisherListSequence`. For each `publisherListSequence`, we'll
-        // only send the VLs with higher sequences.
+        // Build v2 messages on demand and reuse them when possible. Messages
+        // are indexed by the peer's `publisherListSequence`; for each sequence,
+        // we only send VLs with higher sequences.
         std::map<std::size_t, std::vector<ValidatorList::MessageWithHash>> messages2;
         // If any peers are found that are worth considering, this list will
         // be built to hold info for all of the valid VLs.
@@ -887,8 +871,6 @@ ValidatorList::broadcastBlobs(
                 {
                     if (blobInfos.empty())
                         buildBlobInfos(blobInfos, lists);
-                    auto const v2 =
-                        peer->supportsFeature(ProtocolFeature::ValidatorList2Propagation);
                     sendValidatorList(
                         *peer,
                         peerSequence,
@@ -897,7 +879,7 @@ ValidatorList::broadcastBlobs(
                         lists.rawVersion,
                         lists.rawManifest,
                         blobInfos,
-                        v2 ? messages2[peerSequence] : messages1,
+                        messages2[peerSequence],
                         hashRouter,
                         j);
                     // Even if the peer doesn't support the messages,

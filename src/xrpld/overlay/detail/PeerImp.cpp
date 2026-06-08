@@ -545,8 +545,6 @@ PeerImp::supportsFeature(ProtocolFeature f) const
 {
     switch (f)
     {
-        case ProtocolFeature::ValidatorListPropagation:
-            return protocol_ >= makeProtocol(2, 1);
         case ProtocolFeature::ValidatorList2Propagation:
             return protocol_ >= makeProtocol(2, 2);
         case ProtocolFeature::LedgerReplay:
@@ -892,7 +890,7 @@ PeerImp::doProtocolStart()
     onReadMessage(error_code(), 0);
 
     // Send all the validator lists that have been loaded
-    if (inbound_ && supportsFeature(ProtocolFeature::ValidatorListPropagation))
+    if (inbound_)
     {
         app_.getValidators().forEachAvailable(
             [&](std::string const& manifest,
@@ -2275,14 +2273,6 @@ PeerImp::onMessage(std::shared_ptr<protocol::TMValidatorList> const& m)
 {
     try
     {
-        if (!supportsFeature(ProtocolFeature::ValidatorListPropagation))
-        {
-            JLOG(pJournal_.debug()) << "ValidatorList: received validator list from peer using "
-                                    << "protocol version " << to_string(protocol_)
-                                    << " which shouldn't support this feature.";
-            fee_.update(Resource::kFeeUselessData, "unsupported peer");
-            return;
-        }
         onValidatorListMessage(
             "ValidatorList", m->manifest(), m->version(), ValidatorList::parseBlobs(*m));
     }
