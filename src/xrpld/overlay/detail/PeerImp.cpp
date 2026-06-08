@@ -547,8 +547,9 @@ PeerImp::supportsFeature(ProtocolFeature f) const
     {
         case ProtocolFeature::LedgerReplay:
             return ledgerReplayEnabled_;
+        default:
+            return false;
     }
-    return false;
 }
 
 //------------------------------------------------------------------------------
@@ -2263,22 +2264,6 @@ PeerImp::onValidatorListMessage(
                     "disposition");
                 // LCOV_EXCL_STOP
         }
-    }
-}
-
-void
-PeerImp::onMessage(std::shared_ptr<protocol::TMValidatorList> const& m)
-{
-    try
-    {
-        onValidatorListMessage(
-            "ValidatorList", m->manifest(), m->version(), ValidatorList::parseBlobs(*m));
-    }
-    catch (std::exception const& e)
-    {
-        JLOG(pJournal_.warn()) << "ValidatorList: Exception, " << e.what();
-        using namespace std::string_literals;
-        fee_.update(Resource::kFeeInvalidData, e.what());
     }
 }
 
