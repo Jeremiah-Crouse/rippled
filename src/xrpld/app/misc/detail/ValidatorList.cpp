@@ -757,24 +757,11 @@ ValidatorList::sendValidatorList(
             "xrpl::ValidatorList::sendValidatorList : sent or one message");
         if (sent)
         {
-            if (messageVersion > 1)
-            {
-                JLOG(j.debug()) << "Sent " << messages.size()
-                                << " validator list collection(s) containing " << numVLs
-                                << " validator list(s) for " << strHex(publisherKey)
-                                << " with sequence range " << peerSequence << ", "
-                                << newPeerSequence << " to " << peer.fingerprint();
-            }
-            else
-            {
-                XRPL_ASSERT(
-                    numVLs == 1,
-                    "xrpl::ValidatorList::sendValidatorList : one validator "
-                    "list");
-                JLOG(j.debug()) << "Sent validator list for " << strHex(publisherKey)
-                                << " with sequence " << newPeerSequence << " to "
-                                << peer.fingerprint();
-            }
+            JLOG(j.debug()) << "Sent " << messages.size()
+                            << " validator list collection(s) containing " << numVLs
+                            << " validator list(s) for " << strHex(publisherKey)
+                            << " with sequence range " << peerSequence << ", " << newPeerSequence
+                            << " to " << peer.fingerprint();
         }
     }
 }
@@ -882,8 +869,7 @@ ValidatorList::broadcastBlobs(
                         messages2[peerSequence],
                         hashRouter,
                         j);
-                    // Even if the peer doesn't support the messages,
-                    // suppress it so it'll be ignored next time.
+                    // Don't send it next time.
                     hashRouter.addSuppressionPeer(hash, peer->id());
                 }
             }
