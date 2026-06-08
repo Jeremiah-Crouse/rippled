@@ -545,8 +545,6 @@ PeerImp::supportsFeature(ProtocolFeature f) const
 {
     switch (f)
     {
-        case ProtocolFeature::ValidatorList2Propagation:
-            return protocol_ >= makeProtocol(2, 2);
         case ProtocolFeature::LedgerReplay:
             return ledgerReplayEnabled_;
     }
@@ -2289,14 +2287,6 @@ PeerImp::onMessage(std::shared_ptr<protocol::TMValidatorListCollection> const& m
 {
     try
     {
-        if (!supportsFeature(ProtocolFeature::ValidatorList2Propagation))
-        {
-            JLOG(pJournal_.debug()) << "ValidatorListCollection: received validator list from peer "
-                                    << "using protocol version " << to_string(protocol_)
-                                    << " which shouldn't support this feature.";
-            fee_.update(Resource::kFeeUselessData, "unsupported peer");
-            return;
-        }
         if (m->version() < 2)
         {
             JLOG(pJournal_.debug())

@@ -14,7 +14,6 @@ class Charge;
 }  // namespace Resource
 
 enum class ProtocolFeature {
-    ValidatorList2Propagation,  // ValidatorListPropagation is no longer supported.
     LedgerReplay,
 };
 
