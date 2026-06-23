@@ -463,6 +463,7 @@ Transactor::minimumFee(
     return scaleFeeLoad(baseFee, registry.getFeeTrack(), fees, (flags & TapUnlimited) != 0u);
 }
 
+// NOTE: needs to be after `checkSponsor`
 TER
 Transactor::checkFee(PreclaimContext const& ctx, XRPAmount baseFee)
 {
@@ -499,12 +500,13 @@ Transactor::checkFee(PreclaimContext const& ctx, XRPAmount baseFee)
     if (feePaid == beast::kZero)
         return tesSUCCESS;
 
-    auto const feePayer = getFeePayer(ctx.view, ctx.tx);
-    auto const payerSle = ctx.view.read(feePayer.entry);
+    auto const payers = resolveTxPayers(ctx.view, ctx.tx);
+    auto const& feeSource = payers.feeSource;
+    auto const payerSle = ctx.view.read(feeSource.keylet);
 
     if (!payerSle)
     {
-        if (feePayer.type == FeePayerType::SponsorPreFunded)
+        if (feeSource.kind == FundingKind::Sponsorship)
         {
             // Sanity check: already checked in checkSponsor
             return tefINTERNAL;  // LCOV_EXCL_LINE
@@ -513,37 +515,14 @@ Transactor::checkFee(PreclaimContext const& ctx, XRPAmount baseFee)
         return terNO_ACCOUNT;
     }
 
-    XRPAmount maxSpendable = beast::kZero;
+    XRPL_ASSERT(
+        payerSle->getType() ==
+            (src.kind == FundingKind::Sponsorship ? ltSPONSORSHIP : ltACCOUNT_ROOT),
+        "xrpl::Transactor::checkFee : Payer SLE type mismatch");
 
-    if (feePayer.type == FeePayerType::SponsorPreFunded)
-    {
-        if (payerSle->getType() != ltSPONSORSHIP)
-            return tefINTERNAL;  // LCOV_EXCL_LINE
-
-        if (payerSle->isFieldPresent(feePayer.balanceField))
-            maxSpendable = payerSle->getFieldAmount(feePayer.balanceField).xrp();
-
-        if (payerSle->isFieldPresent(sfMaxFee))
-        {
-            auto const cap = payerSle->getFieldAmount(sfMaxFee).xrp();
-            maxSpendable = std::min(maxSpendable, cap);
-        }
-    }
-    else
-    {
-        if (payerSle->getType() != ltACCOUNT_ROOT)
-            return tefINTERNAL;  // LCOV_EXCL_LINE
-
-        if (feePayer.type == FeePayerType::SponsorCoSigned)
-        {
-            STAmount const sponsorReserve = accountReserve(ctx.view, payerSle, ctx.j);
-            maxSpendable = payerSle->getFieldAmount(sfBalance).xrp() - sponsorReserve.xrp();
-        }
-        else
-        {
-            maxSpendable = payerSle->getFieldAmount(feePayer.balanceField).xrp();
-        }
-    }
+    // account balance or max fee allowed in the sponsorship
+    XRPAmount maxSpendable = sourceBalance(payerSle, feeSource.kind);
+    maxSpendable = capFeeBySource(payerSle, feeSource.kind, maxSpendable);
 
     // NOTE: Because preclaim evaluates against a static readview, it
     // does not reflect fee deductions from other transactions paid by
@@ -574,27 +553,13 @@ Transactor::payFee()
 {
     auto const feePaid = ctx_.tx[sfFee].xrp();
 
-    auto const feePayer = getFeePayer(view(), ctx_.tx);
-    auto const sle = view().peek(feePayer.entry);
+    auto const payers = resolveTxPayers(view(), ctx_.tx);
+    auto const& feeSource = payers.feeSource;
 
-    JLOG(j_.trace()) << "Fee payer: " + to_string(feePayer.entry.key);
+    JLOG(j_.trace()) << "Fee payer: " + to_string(feeSource.keylet.key);
 
-    if (!sle)
-        return tefINTERNAL;  // LCOV_EXCL_LINE
-
-    auto const feeAmountAfter = sle->getFieldAmount(feePayer.balanceField) - feePaid;
-
-    if (feeAmountAfter == beast::kZero && feePayer.balanceField == sfFeeAmount)
-    {
-        // Because ltSponsorship.sfFeeAmount is soeOptional
-        sle->makeFieldAbsent(feePayer.balanceField);
-    }
-    else
-    {
-        sle->setFieldAmount(feePayer.balanceField, feeAmountAfter);
-    }
-
-    view().update(sle);
+    if (auto const ter = debitSource(view(), feeSource, feePaid); !isTesSuccess(ter))
+        return ter;  // LCOV_EXCL_LINE
 
     // VFALCO Should we call view().rawDestroyXRP() here as well?
     return tesSUCCESS;
@@ -1259,19 +1224,15 @@ Transactor::reset(XRPAmount fee)
     if (!txnAcct)
         return {tefINTERNAL, beast::kZero};
 
-    auto const feePayer = getFeePayer(view(), ctx_.tx);
-    auto const payerSle = view().peek(feePayer.entry);
+    auto const payers = resolveTxPayers(view(), ctx_.tx);
+    auto const& src = payers.feeSource;
+    auto const payerSle = view().peek(src.keylet);
 
     if (!payerSle)
         return {tefINTERNAL, beast::kZero};  // LCOV_EXCL_LINE
 
-    auto const balance = payerSle->getFieldAmount(feePayer.balanceField).xrp();
-
-    if (feePayer.type == FeePayerType::SponsorPreFunded && payerSle->isFieldPresent(sfMaxFee))
-    {
-        auto const cap = payerSle->getFieldAmount(sfMaxFee).xrp();
-        fee = std::min(fee, cap);
-    }
+    auto const balance = sourceBalance(payerSle, src.kind);
+    fee = capFeeBySource(payerSle, src.kind, fee);
 
     // balance should have already been checked in checkFee / preFlight.
     XRPL_ASSERT(
@@ -1290,62 +1251,17 @@ Transactor::reset(XRPAmount fee)
     // If for some reason we are unable to consume the ticket or sequence
     // then the ledger is corrupted.  Rather than make things worse we
     // reject the transaction.
-    auto const feeAmountAfter = balance - fee;
-    if (feeAmountAfter == beast::kZero && feePayer.balanceField == sfFeeAmount)
-    {
-        // Because ltSponsorship.sfFeeAmount is soeOptional
-        payerSle->makeFieldAbsent(feePayer.balanceField);
-    }
-    else
-    {
-        payerSle->setFieldAmount(feePayer.balanceField, feeAmountAfter);
-    }
-
     TER const ter{consumeSeqProxy(txnAcct)};
     XRPL_ASSERT(isTesSuccess(ter), "xrpl::Transactor::reset : result is tesSUCCESS");
 
     if (isTesSuccess(ter))
     {
         view().update(txnAcct);
-        if (payerSle != txnAcct)
-            view().update(payerSle);
+        if (auto const debitTer = debitSource(view(), src, fee); debitTer != tesSUCCESS)
+            return {debitTer, beast::kZero};  // LCOV_EXCL_LINE
     }
 
     return {ter, fee};
-}
-
-FeePayer
-Transactor::getFeePayer(ReadView const& view, STTx const& tx)
-{
-    if (tx.isFieldPresent(sfSponsor) && ((tx.getFieldU32(sfSponsorFlags) & spfSponsorFee) != 0u))
-    {
-        auto const sponsorAccountID = tx.getAccountID(sfSponsor);
-        auto const sponseeAccountID = tx.getAccountID(sfAccount);
-        auto const hasSponsorSignature = tx.isFieldPresent(sfSponsorSignature);
-        auto const sponsorshipKeylet = keylet::sponsorship(sponsorAccountID, sponseeAccountID);
-
-        // if pre-funded sponsorship exists, prefer it
-        if (hasSponsorSignature && !view.exists(sponsorshipKeylet))
-        {
-            // co-signed
-            return FeePayer{
-                .entry = keylet::account(sponsorAccountID),
-                .balanceField = sfBalance,
-                .type = FeePayerType::SponsorCoSigned};
-        }
-
-        // pre funded
-        return FeePayer{
-            .entry = sponsorshipKeylet,
-            .balanceField = sfFeeAmount,
-            .type = FeePayerType::SponsorPreFunded};
-    }
-
-    auto const payerAccountKeylet = keylet::account(tx.getFeePayer());
-    auto const payerType =
-        tx.isFieldPresent(sfDelegate) ? FeePayerType::Delegate : FeePayerType::Account;
-
-    return FeePayer{.entry = payerAccountKeylet, .balanceField = sfBalance, .type = payerType};
 }
 
 // The sole purpose of this function is to provide a convenient, named

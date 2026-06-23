@@ -2,6 +2,7 @@
 
 #include <xrpl/beast/utility/Journal.h>
 #include <xrpl/beast/utility/WrappedSink.h>
+#include <xrpl/ledger/helpers/FundingSource.h>
 #include <xrpl/ledger/helpers/SponsorHelpers.h>
 #include <xrpl/protocol/Permissions.h>
 #include <xrpl/protocol/XRPAmount.h>
@@ -108,20 +109,6 @@ class TxConsequences;
 struct PreflightResult;
 // Needed for preflight specialization
 class Change;
-
-enum class FeePayerType {
-    Account,
-    Delegate,
-    SponsorCoSigned,
-    SponsorPreFunded,
-};
-
-struct FeePayer
-{
-    Keylet entry;
-    SF_AMOUNT const& balanceField;
-    FeePayerType type{FeePayerType::Account};
-};
 
 class Transactor
 {
@@ -373,9 +360,6 @@ protected:
 private:
     std::pair<TER, XRPAmount>
     reset(XRPAmount fee);
-
-    static FeePayer
-    getFeePayer(ReadView const& view, STTx const& tx);
 
     TER
     consumeSeqProxy(SLE::pointer const& sleAccount);

@@ -5,6 +5,7 @@
 #include <xrpl/ledger/ReadView.h>
 #include <xrpl/ledger/helpers/AccountRootHelpers.h>
 #include <xrpl/ledger/helpers/DirectoryHelpers.h>
+#include <xrpl/ledger/helpers/FundingSource.h>
 #include <xrpl/ledger/helpers/SponsorHelpers.h>
 #include <xrpl/protocol/AccountID.h>
 #include <xrpl/protocol/Feature.h>
@@ -70,20 +71,15 @@ addSLE(ApplyContext& ctx, SLE::ref sle, AccountID const& owner)
     if (!sleAccount)
         return tefINTERNAL;  // LCOV_EXCL_LINE
 
-    // Check reserve availability for new object creation
-    auto const sponsorSle = getTxReserveSponsor(ctx.view(), ctx.tx);
-    if (!sponsorSle)
-        return sponsorSle.error();  // LCOV_EXCL_LINE
-    auto const balance = STAmount((*sleAccount)[sfBalance]).xrp();
-    if (auto const ret = checkInsufficientReserve(
-            ctx.view(), ctx.tx, sleAccount, balance, *sponsorSle, 1, 0, ctx.journal);
-        !isTesSuccess(ret))
+    auto const payers = resolveTxPayers(ctx.view(), ctx.tx);
+
+    // Reserve check spans initiator balance, sponsor balance, and the
+    // Sponsorship object's RemainingOwnerCount cap when applicable.
+    if (auto const ret = checkReserve(ctx.view(), payers, 1, 0, ctx.journal); !isTesSuccess(ret))
         return ret;
 
-    // Add ledger object to ledger
     ctx.view().insert(sle);
 
-    // Add ledger object to owner's page
     {
         auto page =
             ctx.view().dirInsert(keylet::ownerDir(owner), sle->key(), describeOwnerDir(owner));
@@ -91,8 +87,7 @@ addSLE(ApplyContext& ctx, SLE::ref sle, AccountID const& owner)
             return tecDIR_FULL;  // LCOV_EXCL_LINE
         (*sle)[sfOwnerNode] = *page;
     }
-    adjustOwnerCount(ctx.view(), sleAccount, *sponsorSle, 1, ctx.journal);
-    addSponsorToLedgerEntry(sle, *sponsorSle);
+    adjustOwnerCount(ctx.view(), sle, payers, 1, ctx.journal);
     ctx.view().update(sleAccount);
 
     return tesSUCCESS;
